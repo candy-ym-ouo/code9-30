@@ -447,3 +447,81 @@ describe('E10 备份与质量门', () => {
     expect(Object.values(res.body.dirs).every((v) => v === 'ok')).toBe(true);
   });
 });
+
+describe('E11 还原后立即恢复读写 + 安全回滚路径', () => {
+  it('还原成功后服务立即恢复读写（不再报连接已关闭）', async () => {
+    // 1. 记录还原前数据量
+    const before = await call('get', '/api/inspirations');
+    const beforeTotal = before.body.total as number;
+
+    // 2. 做一份完整备份（回滚目标）
+    const backup = await call('post', '/api/backup', {});
+    expect(backup.status).toBe(201);
+    const backupName = backup.body.name as string;
+
+    // 3. 备份之后再写一条「还原后应消失」的探针数据
+    const probe = await call('post', '/api/inspirations', { title: '还原探针-应消失' });
+    expect(probe.status).toBe(201);
+    const probeId = probe.body.id as string;
+    expect((await call('get', `/api/inspirations/${probeId}`)).status).toBe(200);
+
+    // 4. 执行还原
+    const restore = await call('post', '/api/backup/restore', { name: backupName, confirm: true });
+    expect(restore.status).toBe(200);
+    const safetyName = restore.body.safetyBackup as string;
+    expect(typeof safetyName).toBe('string');
+
+    // 5. 关键断言：还原后**立刻**还能正常读写，不抛 "connection is closed"
+    const health = await call('get', '/api/health');
+    expect(health.status).toBe(200);
+    expect(health.body.db).toBe('ok');
+
+    const after = await call('get', '/api/inspirations');
+    expect(after.body.total).toBe(beforeTotal);
+
+    const gone = await call('get', `/api/inspirations/${probeId}`);
+    expect(gone.status).toBe(404);
+
+    // 6. 还原后仍然可以正常写入
+    const write = await call('post', '/api/inspirations', { title: '还原后新写入' });
+    expect(write.status).toBe(201);
+
+    // 安全备份仍保留在备份列表中（回滚路径未丢失）
+    const list = await call('get', '/api/backup/list');
+    expect((list.body.items as { name: string }[]).some((b) => b.name === safetyName)).toBe(true);
+
+    // 记录给后续回滚用例
+    safetyBackupName = safetyName;
+    probeIdForRollback = probeId;
+  });
+
+  it('可用还原前的安全备份回滚：探针数据回来，服务依旧正常', async () => {
+    const res = await call('post', '/api/backup/restore', { name: safetyBackupName, confirm: true });
+    expect(res.status).toBe(200);
+
+    const health = await call('get', '/api/health');
+    expect(health.body.db).toBe('ok');
+
+    const probe = await call('get', `/api/inspirations/${probeIdForRollback}`);
+    expect(probe.status).toBe(200);
+  });
+
+  it('损坏的备份在动活库之前被拒绝，服务不受影响', async () => {
+    // 手工造一个缺 app.db 的坏备份
+    const badName = 'corrupt-backup';
+    const badDir = path.join(process.env.BACKUP_DIR as string, badName);
+    fs.mkdirSync(badDir, { recursive: true });
+
+    const res = await call('post', '/api/backup/restore', { name: badName, confirm: true });
+    expect(res.status).toBe(400);
+
+    const health = await call('get', '/api/health');
+    expect(health.body.db).toBe('ok');
+
+    const stillWritable = await call('post', '/api/inspirations', { title: '坏备份拒绝后仍可写' });
+    expect(stillWritable.status).toBe(201);
+  });
+});
+
+let safetyBackupName = '';
+let probeIdForRollback = '';

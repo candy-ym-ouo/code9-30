@@ -100,7 +100,10 @@ opsRouter.post(
     requireOwner(req);
     const input = z.object({ name: z.string().min(1), confirm: z.boolean() }).parse(req.body);
     const result = await restoreBackup(input.name, input.confirm);
-    ok(res, { ...result, note: '还原前已自动备份当前状态，可回滚到该安全备份。' });
+    ok(res, {
+      ...result,
+      note: '还原已完成，读写已立即恢复；还原前状态已自动备份为安全备份，可用其回滚。',
+    });
   }),
 );
 
