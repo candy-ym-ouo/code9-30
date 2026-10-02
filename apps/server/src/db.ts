@@ -8,7 +8,9 @@ export type SqliteDb = Database.Database;
 let db: SqliteDb | null = null;
 
 export function getDb(): SqliteDb {
-  if (!db) {
+  // !db.open 兜底：连接被直接 close（如还原换库）后，下次获取自动重建，
+  // 避免单例持有已关闭句柄导致全服务持续报「连接已关闭」。
+  if (!db || !db.open) {
     ensureDirs();
     db = new Database(config.databaseFile);
     db.pragma('journal_mode = WAL');
@@ -20,7 +22,7 @@ export function getDb(): SqliteDb {
 
 export function closeDb(): void {
   if (db) {
-    db.close();
+    if (db.open) db.close();
     db = null;
   }
 }

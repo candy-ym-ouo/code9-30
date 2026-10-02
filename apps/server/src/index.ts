@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { createApp } from './app.js';
 import { config, ensureDirs } from './config.js';
-import { migrate, getDb } from './db.js';
+import { migrate, closeDb } from './db.js';
 import { logger } from './logger.js';
 import { scanWindowsForAllLibraries } from './jobs/windowScan.js';
 import { dispatchForAllLibraries } from './jobs/dispatch.js';
@@ -48,7 +48,7 @@ export function bootstrap(): void {
     hourlyTask.stop();
     server.close(() => {
       try {
-        getDb().close();
+        closeDb();
       } catch {
         /* 忽略关闭异常 */
       }

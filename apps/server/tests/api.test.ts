@@ -446,4 +446,57 @@ describe('E10 备份与质量门', () => {
     expect(res.body.db).toBe('ok');
     expect(Object.values(res.body.dirs).every((v) => v === 'ok')).toBe(true);
   });
+
+  it('还原成功后连接立即恢复：不重启进程即可读写', async () => {
+    const backup = await call('post', '/api/backup', {});
+    expect(backup.status).toBe(201);
+    const backupName = backup.body.name as string;
+
+    // 备份之后写入标记数据，还原后它应当消失（证明确实完成了换库）
+    const marker = await call('post', '/api/inspirations', { title: '还原后应消失的标记' });
+    expect(marker.status).toBe(201);
+
+    const restored = await call('post', '/api/backup/restore', { name: backupName, confirm: true });
+    expect(restored.status).toBe(200);
+    expect(restored.body.safetyBackup).toBeTruthy();
+
+    // 关键回归断言：读立刻可用，且已切回备份时的数据
+    const list = await call('get', '/api/inspirations');
+    expect(list.status).toBe(200);
+    const titles = (list.body.items as { title: string }[]).map((i) => i.title);
+    expect(titles).not.toContain('还原后应消失的标记');
+
+    // 写也立刻可用
+    const after = await call('post', '/api/inspirations', { title: '还原后写入的一条' });
+    expect(after.status).toBe(201);
+
+    const health = await call('get', '/api/health');
+    expect(health.body.db).toBe('ok');
+  });
+
+  it('还原失败自动回滚到安全备份，服务保持可读写', async () => {
+    // 构造坏备份：目录存在、app.db 是损坏内容，换库后校验必然失败
+    const badDir = path.join(tmpDir, 'backups', 'bad-backup');
+    fs.mkdirSync(badDir, { recursive: true });
+    fs.writeFileSync(path.join(badDir, 'app.db'), 'not a sqlite database');
+
+    const before = await call('get', '/api/inspirations');
+    expect(before.status).toBe(200);
+
+    const res = await call('post', '/api/backup/restore', { name: 'bad-backup', confirm: true });
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('RESTORE_FAILED_ROLLED_BACK');
+    expect(res.body.error.details.safetyBackup).toBeTruthy();
+
+    // 回滚后读、写、健康检查全部正常，数据与失败前一致
+    const after = await call('get', '/api/inspirations');
+    expect(after.status).toBe(200);
+    expect(after.body.total).toBe(before.body.total);
+
+    const write = await call('post', '/api/inspirations', { title: '回滚后仍可写入' });
+    expect(write.status).toBe(201);
+
+    const health = await call('get', '/api/health');
+    expect(health.body.db).toBe('ok');
+  });
 });
